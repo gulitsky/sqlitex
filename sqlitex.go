@@ -14,7 +14,7 @@ import (
 // It sets "query_only=yes" and optimizes cache for reading.
 //
 // The connection pool is sized based on GOMAXPROCS.
-func OpenReadOnly(driverName string, filePath string, options ...Option) (*sql.DB, error) {
+func OpenReadOnly(driverName string, filePath string, options ...option) (*sql.DB, error) {
 	cfg := &config{
 		params: map[string]string{
 			"_loc":    "auto",
@@ -54,7 +54,7 @@ func OpenReadOnly(driverName string, filePath string, options ...Option) (*sql.D
 // OpenReadWrite opens a database in read-write mode.
 // It sets "mode=rwc", "txlock=immediate", and strictly limits concurrency to 1 connection
 // to avoid SQLITE_BUSY errors during transaction upgrades.
-func OpenReadWrite(driverName string, filePath string, options ...Option) (*sql.DB, error) {
+func OpenReadWrite(driverName string, filePath string, options ...option) (*sql.DB, error) {
 	cfg := &config{
 		params: map[string]string{
 			"_loc":    "auto",
@@ -92,7 +92,7 @@ func OpenReadWrite(driverName string, filePath string, options ...Option) (*sql.
 
 // OpenMemory opens a new shared memory database.
 // Each call creates a distinct database unless a specific name is provided via custom options (not yet supported).
-func OpenMemory(driverName string, options ...Option) (*sql.DB, error) {
+func OpenMemory(driverName string, options ...option) (*sql.DB, error) {
 	db, err := OpenReadWrite(driverName, rand.Text(), append(options, func(cfg *config) error {
 		cfg.params["mode"] = "memory"
 		cfg.params["cache"] = "shared"

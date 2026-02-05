@@ -11,11 +11,11 @@ type config struct {
 	pragmas map[string]string
 }
 
-// Option configures the database connection.
-type Option func(*config) error
+// option configures the database connection.
+type option func(*config) error
 
 // WithBusyTimeout sets the busy_timeout pragma.
-func WithBusyTimeout(timeout time.Duration) Option {
+func WithBusyTimeout(timeout time.Duration) option {
 	return func(cfg *config) error {
 		if timeout < 0 {
 			return fmt.Errorf("busy timeout must be at least zero")
@@ -28,7 +28,7 @@ func WithBusyTimeout(timeout time.Duration) Option {
 }
 
 // WithCacheSizeKiB sets the cache_size pragma (in KiB).
-func WithCacheSizeKiB(size uint64) Option {
+func WithCacheSizeKiB(size uint64) option {
 	return func(cfg *config) error {
 		cfg.pragmas["cache_size"] = "-" + strconv.FormatUint(size, 10)
 
@@ -37,7 +37,7 @@ func WithCacheSizeKiB(size uint64) Option {
 }
 
 // WithMemoryMapSize sets the mmap_size pragma.
-func WithMemoryMapSize(size uint64) Option {
+func WithMemoryMapSize(size uint64) option {
 	return func(cfg *config) error {
 		cfg.pragmas["mmap_size"] = strconv.FormatUint(size, 10)
 
@@ -46,7 +46,7 @@ func WithMemoryMapSize(size uint64) Option {
 }
 
 // WithWALAutoCheckpoint sets the wal_autocheckpoint pragma (number of pages).
-func WithWALAutoCheckpoint(pages uint64) Option {
+func WithWALAutoCheckpoint(pages uint64) option {
 	return func(cfg *config) error {
 		cfg.pragmas["wal_autocheckpoint"] = strconv.FormatUint(pages, 10)
 
@@ -55,7 +55,7 @@ func WithWALAutoCheckpoint(pages uint64) Option {
 }
 
 // WithPragma adds or overrides a specific SQLite pragma.
-func WithPragma(name, value string) Option {
+func WithPragma(name, value string) option {
 	return func(cfg *config) error {
 		cfg.pragmas[name] = value
 		return nil

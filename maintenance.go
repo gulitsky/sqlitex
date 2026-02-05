@@ -14,11 +14,11 @@ type maintenanceConfig struct {
 	logger           *slog.Logger
 }
 
-// MaintenanceOption configures the maintenance loop.
-type MaintenanceOption func(*maintenanceConfig) error
+// maintenanceOption configures the maintenance loop.
+type maintenanceOption func(*maintenanceConfig) error
 
 // WithOptimizePeriod sets the interval for PRAGMA optimize.
-func WithOptimizePeriod(period time.Duration) MaintenanceOption {
+func WithOptimizePeriod(period time.Duration) maintenanceOption {
 	return func(cfg *maintenanceConfig) error {
 		if period < 0 {
 			return fmt.Errorf("optimize period must be at least zero")
@@ -31,7 +31,7 @@ func WithOptimizePeriod(period time.Duration) MaintenanceOption {
 }
 
 // WithCheckpointPeriod sets the interval for PRAGMA wal_checkpoint(PASSIVE).
-func WithCheckpointPeriod(period time.Duration) MaintenanceOption {
+func WithCheckpointPeriod(period time.Duration) maintenanceOption {
 	return func(cfg *maintenanceConfig) error {
 		if period < 0 {
 			return fmt.Errorf("checkpoint period must be at least zero")
@@ -44,7 +44,7 @@ func WithCheckpointPeriod(period time.Duration) MaintenanceOption {
 }
 
 // WithLogger sets the structured logger for maintenance events.
-func WithLogger(logger *slog.Logger) MaintenanceOption {
+func WithLogger(logger *slog.Logger) maintenanceOption {
 	return func(cfg *maintenanceConfig) error {
 		cfg.logger = logger
 		return nil
@@ -54,7 +54,7 @@ func WithLogger(logger *slog.Logger) MaintenanceOption {
 // Maintain starts a background maintenance loop for the database.
 // It performs periodic WAL checkpoints and optimizations.
 // It returns only when ctx is canceled or a fatal error occurs during final checkpoint.
-func Maintain(ctx context.Context, db *sql.DB, options ...MaintenanceOption) error {
+func Maintain(ctx context.Context, db *sql.DB, options ...maintenanceOption) error {
 	cfg := &maintenanceConfig{
 		optimizePeriod:   4 * time.Hour,
 		checkpointPeriod: 1 * time.Minute,
