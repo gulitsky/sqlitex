@@ -120,7 +120,7 @@ func TestMaintain(t *testing.T) {
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 
 	// Start maintenance in background
 	errCh := make(chan error)

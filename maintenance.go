@@ -3,6 +3,7 @@ package sqlitex
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -21,7 +22,7 @@ type maintenanceOption func(*maintenanceConfig) error
 func WithOptimizePeriod(period time.Duration) maintenanceOption {
 	return func(cfg *maintenanceConfig) error {
 		if period < 0 {
-			return fmt.Errorf("optimize period must be at least zero")
+			return errors.New("optimize period must be at least zero")
 		}
 
 		cfg.optimizePeriod = period
@@ -34,7 +35,7 @@ func WithOptimizePeriod(period time.Duration) maintenanceOption {
 func WithCheckpointPeriod(period time.Duration) maintenanceOption {
 	return func(cfg *maintenanceConfig) error {
 		if period < 0 {
-			return fmt.Errorf("checkpoint period must be at least zero")
+			return errors.New("checkpoint period must be at least zero")
 		}
 
 		cfg.checkpointPeriod = period
@@ -92,7 +93,7 @@ func Maintain(ctx context.Context, db *sql.DB, options ...maintenanceOption) err
 	for {
 		select {
 		case <-ctx.Done():
-			cfg.logger.Info("shutting down maintenance, performing final checkpoint")
+			cfg.logger.Info("stopping maintenance, performing final checkpoint")
 			if err := doCheckpoint("TRUNCATE"); err != nil {
 				cfg.logger.Error("final checkpoint failed", "error", err)
 				return fmt.Errorf("final checkpoint: %w", err)

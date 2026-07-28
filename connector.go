@@ -71,6 +71,7 @@ func (c *connector) exec(ctx context.Context, conn driver.Conn, query string) er
 	if sec, ok := stmt.(driver.StmtExecContext); ok {
 		_, err = sec.ExecContext(ctx, nil)
 	} else {
+		//nolint:staticcheck // fallback for driver.Stmt implementations without context support
 		_, err = stmt.Exec(nil)
 	}
 

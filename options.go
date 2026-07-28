@@ -1,8 +1,10 @@
 package sqlitex
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,7 +20,7 @@ type option func(*config) error
 func WithBusyTimeout(timeout time.Duration) option {
 	return func(cfg *config) error {
 		if timeout < 0 {
-			return fmt.Errorf("busy timeout must be at least zero")
+			return errors.New("busy timeout must be at least zero")
 		}
 
 		cfg.pragmas["busy_timeout"] = strconv.FormatInt(timeout.Milliseconds(), 10)
@@ -55,9 +57,19 @@ func WithWALAutoCheckpoint(pages uint64) option {
 }
 
 // WithPragma adds or overrides a specific SQLite pragma.
+//
+// name and value are interpolated directly into a "PRAGMA name = value;"
+// statement, since SQLite has no way to bind PRAGMA parameters. Only pass
+// trusted, compile-time values — never forward untrusted user input.
 func WithPragma(name, value string) option {
 	return func(cfg *config) error {
+		const disallowed = ";\x00\r\n"
+		if strings.ContainsAny(name, disallowed) || strings.ContainsAny(value, disallowed) {
+			return fmt.Errorf("pragma name %q or value %q contains disallowed characters", name, value)
+		}
+
 		cfg.pragmas[name] = value
+
 		return nil
 	}
 }
