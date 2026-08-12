@@ -59,8 +59,9 @@ func OpenReadOnly(driverName string, filePath string, options ...option) (*sql.D
 // It sets "mode=rwc", "txlock=immediate", and strictly limits concurrency to 1 connection
 // to avoid SQLITE_BUSY errors during transaction upgrades.
 //
-// Automatic WAL checkpointing is disabled ("wal_autocheckpoint=0"); use Maintain
-// to run checkpoints on a schedule instead.
+// SQLite's automatic WAL checkpointing is left enabled, so a database opened
+// this way is safe without a maintenance loop. Maintain disables it for as long
+// as it runs; pass WithWALAutoCheckpoint(0) to disable it on every connection.
 func OpenReadWrite(driverName string, filePath string, options ...option) (*sql.DB, error) {
 	cfg := &config{
 		params: map[string]string{
@@ -74,7 +75,6 @@ func OpenReadWrite(driverName string, filePath string, options ...option) (*sql.
 	cfg.pragmas["analysis_limit"] = "1000"
 	cfg.pragmas["cache_size"] = "-64000"
 	cfg.pragmas["optimize"] = "0x10002"
-	cfg.pragmas["wal_autocheckpoint"] = "0"
 
 	for _, opt := range options {
 		if err := opt(cfg); err != nil {
@@ -134,19 +134,24 @@ func commonPragmas() map[string]string {
 }
 
 func dsn(filePath string, params map[string]string) string {
+	// A Windows drive letter parses as a one-letter scheme ("C:/db" -> "c"), so it
+	// has to be recognized here rather than treated as an already-formed URI.
 	u, err := url.Parse(filePath)
-	if err != nil || u.Scheme == "" {
+	if err != nil || u.Scheme == "" || isDriveLetter(u.Scheme) {
 		u = &url.URL{Scheme: "file"}
-		if filepath.IsAbs(filePath) {
-			// SQLite's file: URI filenames always use forward slashes, and
+
+		// SQLite's file: URI filenames always use forward slashes.
+		p := filepath.ToSlash(filePath)
+		if isAbs(p) {
 			// Windows drive-letter paths (C:/...) need a leading slash.
-			p := filepath.ToSlash(filePath)
 			if !strings.HasPrefix(p, "/") {
 				p = "/" + p
 			}
 			u.Path = p
 		} else {
-			u.Opaque = filePath
+			// Opaque is written verbatim by URL.String, so escape it the same way
+			// EscapedPath would, keeping "?" and "#" out of the query and fragment.
+			u.Opaque = (&url.URL{Path: p}).EscapedPath()
 		}
 	}
 
@@ -157,6 +162,30 @@ func dsn(filePath string, params map[string]string) string {
 	u.RawQuery = q.Encode()
 
 	return u.String()
+}
+
+// isDriveLetter reports whether scheme is a single letter, which url.Parse
+// produces for a Windows drive-letter path such as "C:/data/db.sqlite".
+func isDriveLetter(scheme string) bool {
+	if len(scheme) != 1 {
+		return false
+	}
+
+	c := scheme[0]
+
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// isAbs reports whether a slash-separated path is absolute for SQLite's purposes,
+// on any host OS: rooted ("/data/db.sqlite") or drive-qualified ("C:/db.sqlite").
+func isAbs(p string) bool {
+	if strings.HasPrefix(p, "/") {
+		return true
+	}
+
+	prefix, _, found := strings.Cut(p, "/")
+
+	return found && len(prefix) == 2 && prefix[1] == ':' && isDriveLetter(prefix[:1])
 }
 
 func pragmas(m map[string]string) []string {

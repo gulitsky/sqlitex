@@ -113,6 +113,86 @@ func TestWithPragma(t *testing.T) {
 	}
 }
 
+// A zero period disables one task instead of panicking in time.NewTicker.
+func TestMaintainZeroPeriods(t *testing.T) {
+	db, err := sqlitex.OpenMemory("sqlite")
+	if err != nil {
+		t.Fatalf("OpenMemory failed: %v", err)
+	}
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sqlitex.Maintain(ctx, db,
+			sqlitex.WithOptimizePeriod(0),
+			sqlitex.WithCheckpointPeriod(0),
+		)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Maintain returned error: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Error("Maintain did not return after cancellation")
+	}
+}
+
+// Maintain owns checkpointing while it runs, and hands it back when it stops.
+func TestMaintainWALAutoCheckpoint(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "checkpoint.db")
+
+	db, err := sqlitex.OpenReadWrite("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("OpenReadWrite failed: %v", err)
+	}
+	defer db.Close()
+
+	autoCheckpoint := func() int {
+		t.Helper()
+
+		var pages int
+		if err := db.QueryRow("PRAGMA wal_autocheckpoint;").Scan(&pages); err != nil {
+			t.Fatalf("query wal_autocheckpoint: %v", err)
+		}
+
+		return pages
+	}
+
+	before := autoCheckpoint()
+	if before <= 0 {
+		t.Fatalf("expected automatic checkpoints to be enabled on open, got %d", before)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sqlitex.Maintain(ctx, db, sqlitex.WithCheckpointPeriod(10*time.Millisecond))
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	if during := autoCheckpoint(); during != 0 {
+		t.Errorf("wal_autocheckpoint = %d while maintaining, want 0", during)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("Maintain returned error: %v", err)
+	}
+
+	if after := autoCheckpoint(); after != before {
+		t.Errorf("wal_autocheckpoint = %d after maintaining, want %d restored", after, before)
+	}
+}
+
 func TestMaintain(t *testing.T) {
 	db, err := sqlitex.OpenMemory("sqlite")
 	if err != nil {
