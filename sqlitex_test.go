@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gulitsky/sqlitex"
+	"github.com/gulitsky/sqlitex/v2"
 	_ "modernc.org/sqlite" // Register sqlite driver
 )
 

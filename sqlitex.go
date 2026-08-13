@@ -21,6 +21,11 @@ import (
 // It sets "query_only=yes" and optimizes cache for reading.
 //
 // The connection pool is sized based on GOMAXPROCS.
+//
+// The database and its WAL have to exist already: a read-only connection can
+// create neither, and the pool is lazy, so the failure surfaces at the first
+// query rather than here. Open pairs this pool with a read-write one and
+// establishes that ordering itself.
 func OpenReadOnly(driverName string, filePath string, options ...option) (*sql.DB, error) {
 	cfg := &config{
 		params: map[string]string{
@@ -40,7 +45,7 @@ func OpenReadOnly(driverName string, filePath string, options ...option) (*sql.D
 		}
 	}
 
-	db, err := Open(driverName, dsn(filePath, cfg.params), pragmas(cfg.pragmas)...)
+	db, err := open(driverName, dsn(filePath, cfg.params), pragmas(cfg.pragmas)...)
 	if err != nil {
 		return nil, err
 	}
@@ -62,6 +67,9 @@ func OpenReadOnly(driverName string, filePath string, options ...option) (*sql.D
 // SQLite's automatic WAL checkpointing is left enabled, so a database opened
 // this way is safe without a maintenance loop. Maintain disables it for as long
 // as it runs; pass WithWALAutoCheckpoint(0) to disable it on every connection.
+//
+// Applications that also read concurrently want a read-only pool alongside
+// this one, since it is limited to a single connection. Open provides both.
 func OpenReadWrite(driverName string, filePath string, options ...option) (*sql.DB, error) {
 	cfg := &config{
 		params: map[string]string{
@@ -82,7 +90,7 @@ func OpenReadWrite(driverName string, filePath string, options ...option) (*sql.
 		}
 	}
 
-	db, err := Open(driverName, dsn(filePath, cfg.params), pragmas(cfg.pragmas)...)
+	db, err := open(driverName, dsn(filePath, cfg.params), pragmas(cfg.pragmas)...)
 	if err != nil {
 		return nil, err
 	}

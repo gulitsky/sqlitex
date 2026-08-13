@@ -35,7 +35,10 @@ func (c *connector) Driver() driver.Driver {
 	return c.driver
 }
 
-func Open(driverName string, dataSourceName string, preemptive ...string) (*sql.DB, error) {
+// open returns a pool whose every new connection runs the preemptive
+// statements before it is handed out, so pragmas apply to the whole pool
+// rather than to whichever connection happened to serve the setup query.
+func open(driverName string, dataSourceName string, preemptive ...string) (*sql.DB, error) {
 	db, err := sql.Open(driverName, "")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)

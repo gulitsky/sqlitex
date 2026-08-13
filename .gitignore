@@ -1,0 +1,3 @@
+# Coverage reports
+*.out
+coverage.html

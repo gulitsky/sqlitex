@@ -1,4 +1,4 @@
-module github.com/gulitsky/sqlitex
+module github.com/gulitsky/sqlitex/v2
 
 go 1.26.5
 
