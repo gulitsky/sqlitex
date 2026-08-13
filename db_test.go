@@ -20,7 +20,7 @@ func TestOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // asserted by TestClose
 
 	if _, err := db.RW.ExecContext(t.Context(), "CREATE TABLE test (val TEXT);"); err != nil {
 		t.Fatalf("create table: %v", err)
@@ -48,7 +48,7 @@ func TestOpenUnreachablePath(t *testing.T) {
 
 	db, err := sqlitex.Open(t.Context(), "sqlite", dbPath)
 	if err == nil {
-		db.Close()
+		_ = db.Close()
 		t.Fatal("expected Open to fail on a path whose directory does not exist")
 	}
 }
@@ -64,7 +64,7 @@ func TestOpenOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // asserted by TestClose
 
 	for name, pool := range map[string]*sql.DB{"RW": db.RW, "RO": db.RO} {
 		var timeout int
@@ -115,7 +115,7 @@ func TestDBMaintain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	defer db.Close()
+	defer db.Close() //nolint:errcheck // asserted by TestClose
 
 	ctx, cancel := context.WithCancel(t.Context())
 

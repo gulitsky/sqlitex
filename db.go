@@ -72,6 +72,12 @@ func (db *DB) Close() error {
 	return errors.Join(db.RO.Close(), db.RW.Close())
 }
 
+// Migrate brings the schema in line with the declared one, on the read-write
+// pool. See the [Migrate] function for what it does and what it refuses to do.
+func (db *DB) Migrate(ctx context.Context, schema string, options ...migrateOption) error {
+	return Migrate(ctx, db.RW, schema, options...)
+}
+
 // Maintain runs the maintenance loop on the read-write pool, reporting the
 // path the pair was opened from as the database name. It returns only when ctx
 // is canceled or the final checkpoint fails.

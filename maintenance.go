@@ -208,16 +208,16 @@ func setWALAutoCheckpoint(ctx context.Context, db *sql.DB, pages int, logger *sl
 // they are reported as ":memory:"; a database that cannot be queried is
 // reported as "unknown" rather than failing maintenance.
 //
-// The timeout is deliberately short: the query has to wait for a pooled
-// connection, and a read-write pool holds only one. Delaying the maintenance
-// loop is worse than logging an unresolved name.
-func mainDatabaseName(ctx context.Context, db *sql.DB) string {
+// The timeout is deliberately short: the query may have to wait for a pooled
+// connection, and a read-write pool holds only one. Delaying the caller is
+// worse than logging an unresolved name.
+func mainDatabaseName(ctx context.Context, q querier) string {
 	const unknown = "unknown"
 
 	tCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 	defer cancel()
 
-	rows, err := db.QueryContext(tCtx, "PRAGMA database_list;")
+	rows, err := q.QueryContext(tCtx, "PRAGMA database_list;")
 	if err != nil {
 		return unknown
 	}
