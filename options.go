@@ -56,6 +56,29 @@ func WithWALAutoCheckpoint(pages uint64) option {
 	}
 }
 
+// WithParam adds or overrides a query parameter of the connection string.
+//
+// This is the escape hatch for the settings SQLite and the drivers read from
+// the DSN rather than from a pragma: SQLite's own "vfs" and "immutable", and
+// whatever the driver in use defines, such as modernc.org/sqlite's
+// "_time_format" or mattn/go-sqlite3's "_auth". Both drivers ignore a
+// parameter they do not recognize, so one meant for the other is harmless.
+//
+// The value is escaped, so it needs no quoting. It is applied over the
+// defaults, which is enough to override "mode" or "cache" and open a pool
+// that does not do what the constructor's name says.
+func WithParam(name, value string) option {
+	return func(cfg *config) error {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("parameter name must not be empty")
+		}
+
+		cfg.params[name] = value
+
+		return nil
+	}
+}
+
 // WithPragma adds or overrides a specific SQLite pragma.
 //
 // name and value are interpolated directly into a "PRAGMA name = value;"

@@ -7,14 +7,13 @@ import (
 	"testing"
 
 	"github.com/gulitsky/sqlitex/v2"
-	_ "modernc.org/sqlite" // Register sqlite driver
 )
 
 // setup opens an in-memory database and puts it in the given state.
 func setup(t *testing.T, statements ...string) *sql.DB {
 	t.Helper()
 
-	db, err := sqlitex.OpenMemory("sqlite")
+	db, err := sqlitex.OpenMemory(testDriver)
 	if err != nil {
 		t.Fatalf("OpenMemory failed: %v", err)
 	}

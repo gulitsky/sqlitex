@@ -2,7 +2,10 @@ module github.com/gulitsky/sqlitex/v2
 
 go 1.26.5
 
-require modernc.org/sqlite v1.56.0
+require (
+	github.com/mattn/go-sqlite3 v1.14.52
+	modernc.org/sqlite v1.56.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect

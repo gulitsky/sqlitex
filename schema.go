@@ -212,8 +212,12 @@ func sequenceOf(ctx context.Context, q querier, table string) (int64, bool, erro
 		return 0, false, nil
 	}
 
+	// The row records the stored spelling of the name, which is the one the
+	// table was created with rather than the declared one, so the two differ
+	// whenever a declaration changes only the case of a table name.
 	var seq int64
-	err := q.QueryRowContext(ctx, `SELECT seq FROM sqlite_sequence WHERE name = ?;`, table).Scan(&seq)
+	err := q.QueryRowContext(ctx,
+		`SELECT seq FROM sqlite_sequence WHERE name = ? COLLATE NOCASE;`, table).Scan(&seq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}

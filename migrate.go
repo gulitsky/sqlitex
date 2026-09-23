@@ -25,7 +25,7 @@ const canonicalName = "sqlitex_canonical"
 type migrateConfig struct {
 	allowDrop    bool
 	premigration func(context.Context, *sql.Conn) error
-	fixtures     string
+	seed         string
 	ignore       []string
 	logger       *slog.Logger
 }
@@ -93,7 +93,7 @@ func WithPremigration(fn func(ctx context.Context, conn *sql.Conn) error) migrat
 	}
 }
 
-// WithFixtures registers a script of statements to run once the schema is in
+// WithSeed registers a script of statements to run once the schema is in
 // place — the rows that have to exist for the database to be usable at all,
 // such as reference tables the rest of the schema points at.
 //
@@ -108,9 +108,9 @@ func WithPremigration(fn func(ctx context.Context, conn *sql.Conn) error) migrat
 // rewrites its rows on every run even when the values are identical, and a
 // database large enough for the check to be slow will feel it on every
 // startup.
-func WithFixtures(fixtures string) migrateOption {
+func WithSeed(seed string) migrateOption {
 	return func(cfg *migrateConfig) error {
-		cfg.fixtures = fixtures
+		cfg.seed = seed
 
 		return nil
 	}
@@ -134,7 +134,8 @@ func WithFixtures(fixtures string) migrateOption {
 // Since ignored objects are never touched, they are also not stepped aside
 // while a table is rebuilt. An ignored view that reads a declared table will
 // therefore fail that rebuild, the same way a view SQLite cannot reparse
-// always does.
+// always does, and an ignored index or trigger on a declared table is lost
+// with the table the rebuild drops, since nothing is left to create it again.
 func WithIgnore(patterns ...string) migrateOption {
 	return func(cfg *migrateConfig) error {
 		for _, pattern := range patterns {
@@ -285,8 +286,8 @@ func buildPlan(ctx context.Context, cfg *migrateConfig, drv driver.Driver, actua
 //
 // It has three phases, in order: the premigration says what a comparison could
 // not have inferred, the declared schema is compared and the difference
-// applied, and the fixtures put back the rows the schema takes for granted.
-// Only the middle one is required; see WithPremigration and WithFixtures.
+// applied, and the seed puts back the rows the schema takes for granted.
+// Only the middle one is required; see WithPremigration and WithSeed.
 //
 // It runs on a single connection taken from db, inside one transaction, with
 // foreign key enforcement off for its duration — the rebuild procedure drops
@@ -312,6 +313,7 @@ func Migrate(ctx context.Context, db *sql.DB, schema string, options ...migrateO
 		logger  = cfg.logger
 		applied int
 		written int64
+		ran     bool // whether a premigration was given a chance to change anything
 		started = time.Now()
 	)
 
@@ -331,6 +333,8 @@ func Migrate(ctx context.Context, db *sql.DB, schema string, options ...migrateO
 				return fmt.Errorf("premigration: %w", err)
 			}
 
+			ran = true
+
 			logger.DebugContext(ctx, "premigration applied")
 		}
 
@@ -347,13 +351,13 @@ func Migrate(ctx context.Context, db *sql.DB, schema string, options ...migrateO
 			}
 		}
 
-		// Last, once the schema they are written against is in place.
-		if strings.TrimSpace(cfg.fixtures) != "" {
-			if _, err := conn.ExecContext(ctx, cfg.fixtures); err != nil {
-				return fmt.Errorf("apply fixtures: %w", err)
+		// Last, once the schema it is written against is in place.
+		if strings.TrimSpace(cfg.seed) != "" {
+			if _, err := conn.ExecContext(ctx, cfg.seed); err != nil {
+				return fmt.Errorf("apply seed: %w", err)
 			}
 
-			logger.DebugContext(ctx, "fixtures applied")
+			logger.DebugContext(ctx, "seed applied")
 		}
 
 		after, err := totalChanges(ctx, conn)
@@ -365,11 +369,15 @@ func Migrate(ctx context.Context, db *sql.DB, schema string, options ...migrateO
 
 		// Checking foreign keys reads every row of every table that has one,
 		// which is not a price to pay on each startup for a migration that
-		// turned out to have nothing to do. Fixtures written with INSERT OR
-		// IGNORE or ON CONFLICT DO NOTHING stop writing once they have taken,
-		// and land here; ON CONFLICT DO UPDATE rewrites its rows every time,
+		// turned out to have nothing to do. A seed written with INSERT OR
+		// IGNORE or ON CONFLICT DO NOTHING stops writing once it has taken,
+		// and lands here; ON CONFLICT DO UPDATE rewrites its rows every time,
 		// so it pays for the check every time.
-		if applied == 0 && written == 0 {
+		//
+		// A premigration is never assumed to have done nothing: total_changes
+		// does not count the rows DDL touches, so one that only altered tables
+		// leaves both counters at zero having changed the schema underfoot.
+		if !ran && applied == 0 && written == 0 {
 			return nil
 		}
 
@@ -381,7 +389,7 @@ func Migrate(ctx context.Context, db *sql.DB, schema string, options ...migrateO
 
 	// Reported once the transaction has committed, so that nothing claims a
 	// migration that a failed commit took back.
-	if applied == 0 && written == 0 {
+	if !ran && applied == 0 && written == 0 {
 		logger.DebugContext(ctx, "database schema is up to date")
 
 		return nil
@@ -685,7 +693,16 @@ func (p *planner) run(ctx context.Context) ([]string, error) {
 	drop = compact(drop, gone)
 
 	for _, have := range drop {
-		if have.typ == "table" && !p.cfg.allowDrop {
+		if have.typ != "table" || p.cfg.allowDrop {
+			continue
+		}
+
+		// The name may well be declared, just not as a table: replacing a
+		// table with a view of the same name drops the table as much as
+		// leaving it out of the declaration does.
+		if want, ok := desired[fold(have.name)]; ok {
+			p.refuse("table %s is declared as a %s", quoteIdent(have.name), want.typ)
+		} else {
 			p.refuse("table %s is not declared", quoteIdent(have.name))
 		}
 	}
@@ -853,7 +870,7 @@ func (p *planner) rebuild(ctx context.Context, want object, existing map[string]
 		// hand out identifiers the old table has already used and deleted.
 		if ok {
 			stmts = append(stmts,
-				fmt.Sprintf("DELETE FROM sqlite_sequence WHERE name = %s;", quoteString(want.name)),
+				fmt.Sprintf("DELETE FROM sqlite_sequence WHERE name = %s COLLATE NOCASE;", quoteString(want.name)),
 				fmt.Sprintf("INSERT INTO sqlite_sequence (name, seq) VALUES (%s, %d);", quoteString(want.name), seq),
 			)
 		}

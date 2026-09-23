@@ -2,12 +2,12 @@ package sqlitex_test
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/gulitsky/sqlitex/v2"
-	_ "modernc.org/sqlite" // Register sqlite driver
 )
 
 func TestOpenReadOnly(t *testing.T) {
@@ -15,7 +15,7 @@ func TestOpenReadOnly(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test.db")
 
-	initDB, err := sqlitex.OpenReadWrite("sqlite", dbPath)
+	initDB, err := sqlitex.OpenReadWrite(testDriver, dbPath)
 	if err != nil {
 		t.Fatalf("failed to create init db: %v", err)
 	}
@@ -26,7 +26,7 @@ func TestOpenReadOnly(t *testing.T) {
 	}
 
 	// Test OpenReadOnly
-	db, err := sqlitex.OpenReadOnly("sqlite", dbPath)
+	db, err := sqlitex.OpenReadOnly(testDriver, dbPath)
 	if err != nil {
 		t.Fatalf("OpenReadOnly failed: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestOpenReadWrite(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "test_rw.db")
 
-	db, err := sqlitex.OpenReadWrite("sqlite", dbPath)
+	db, err := sqlitex.OpenReadWrite(testDriver, dbPath)
 	if err != nil {
 		t.Fatalf("OpenReadWrite failed: %v", err)
 	}
@@ -69,13 +69,13 @@ func TestOpenReadWrite(t *testing.T) {
 
 func TestOpenMemory(t *testing.T) {
 	// Open two memory databases. They should be distinct.
-	db1, err := sqlitex.OpenMemory("sqlite")
+	db1, err := sqlitex.OpenMemory(testDriver)
 	if err != nil {
 		t.Fatalf("OpenMemory 1 failed: %v", err)
 	}
 	defer db1.Close()
 
-	db2, err := sqlitex.OpenMemory("sqlite")
+	db2, err := sqlitex.OpenMemory(testDriver)
 	if err != nil {
 		t.Fatalf("OpenMemory 2 failed: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestOpenMemory(t *testing.T) {
 }
 
 func TestWithPragma(t *testing.T) {
-	db, err := sqlitex.OpenMemory("sqlite", sqlitex.WithPragma("foreign_keys", "off"))
+	db, err := sqlitex.OpenMemory(testDriver, sqlitex.WithPragma("foreign_keys", "off"))
 	if err != nil {
 		t.Fatalf("OpenMemory failed: %v", err)
 	}
@@ -113,9 +113,74 @@ func TestWithPragma(t *testing.T) {
 	}
 }
 
+// A time.Time has to come back as one whatever driver wrote it, and SQLite's
+// own date functions have to be able to read the column either way. The two
+// drivers disagree on the format unless each is told which one to use, and
+// only one of the two parameters that say so is read by each.
+func TestTimeIsStoredInSQLiteFormat(t *testing.T) {
+	db, err := sqlitex.OpenMemory(testDriver)
+	if err != nil {
+		t.Fatalf("OpenMemory failed: %v", err)
+	}
+	defer db.Close()
+
+	if _, err := db.Exec(`CREATE TABLE events (at DATETIME NOT NULL);`); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	when := time.Date(2026, 9, 23, 10, 30, 0, 0, time.FixedZone("CEST", 2*3600))
+	if _, err := db.Exec(`INSERT INTO events (at) VALUES (?);`, when); err != nil {
+		t.Fatalf("insert a time: %v", err)
+	}
+
+	// SQLite parses what was written, rather than returning null for a format
+	// only the driver that wrote it understands.
+	var normalized sql.NullString
+	if err := db.QueryRow(`SELECT datetime(at) FROM events;`).Scan(&normalized); err != nil {
+		t.Fatalf("read the time back through datetime(): %v", err)
+	}
+	if !normalized.Valid {
+		var raw string
+		_ = db.QueryRow(`SELECT CAST(at AS TEXT) FROM events;`).Scan(&raw)
+		t.Fatalf("datetime() cannot parse the stored value %q", raw)
+	}
+	if normalized.String != "2026-09-23 08:30:00" {
+		t.Errorf("datetime(at) = %q, want the value in UTC", normalized.String)
+	}
+
+	// And the driver reads its own writing back as the same instant.
+	var back time.Time
+	if err := db.QueryRow(`SELECT at FROM events;`).Scan(&back); err != nil {
+		t.Fatalf("scan into a time.Time: %v", err)
+	}
+	if !back.Equal(when) {
+		t.Errorf("read back %s, want %s", back, when)
+	}
+}
+
+// WithParam reaches the settings that live in the connection string rather
+// than in a pragma, which is the only way to get at some driver behaviour.
+func TestWithParam(t *testing.T) {
+	db, err := sqlitex.OpenMemory(testDriver, sqlitex.WithParam("mode", "ro"))
+	if err != nil {
+		t.Fatalf("OpenMemory failed: %v", err)
+	}
+	defer db.Close()
+
+	// OpenMemory applies its own mode last, so the override does not take.
+	if _, err := db.Exec(`CREATE TABLE t (id INTEGER PRIMARY KEY);`); err != nil {
+		t.Fatalf("OpenMemory did not keep mode=memory: %v", err)
+	}
+
+	// An empty name would produce a connection string parameter with none.
+	if _, err := sqlitex.OpenMemory(testDriver, sqlitex.WithParam("  ", "x")); err == nil {
+		t.Error("expected an empty parameter name to be rejected")
+	}
+}
+
 // A zero period disables one task instead of panicking in time.NewTicker.
 func TestMaintainZeroPeriods(t *testing.T) {
-	db, err := sqlitex.OpenMemory("sqlite")
+	db, err := sqlitex.OpenMemory(testDriver)
 	if err != nil {
 		t.Fatalf("OpenMemory failed: %v", err)
 	}
@@ -148,7 +213,7 @@ func TestMaintainZeroPeriods(t *testing.T) {
 func TestMaintainWALAutoCheckpoint(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "checkpoint.db")
 
-	db, err := sqlitex.OpenReadWrite("sqlite", dbPath)
+	db, err := sqlitex.OpenReadWrite(testDriver, dbPath)
 	if err != nil {
 		t.Fatalf("OpenReadWrite failed: %v", err)
 	}
@@ -194,7 +259,7 @@ func TestMaintainWALAutoCheckpoint(t *testing.T) {
 }
 
 func TestMaintain(t *testing.T) {
-	db, err := sqlitex.OpenMemory("sqlite")
+	db, err := sqlitex.OpenMemory(testDriver)
 	if err != nil {
 		t.Fatalf("OpenMemory failed: %v", err)
 	}

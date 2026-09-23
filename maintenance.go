@@ -147,7 +147,7 @@ func Maintain(ctx context.Context, db *sql.DB, options ...maintenanceOption) err
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("database maintenance stopping", "mode", "TRUNCATE")
+			logger.Debug("database maintenance stopping", "mode", "TRUNCATE")
 			if err := doCheckpoint("TRUNCATE"); err != nil {
 				logger.Error("final checkpoint failed", "mode", "TRUNCATE", "error", err)
 				return fmt.Errorf("final checkpoint on %s: %w", database, err)

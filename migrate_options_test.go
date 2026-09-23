@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/gulitsky/sqlitex/v2"
-	_ "modernc.org/sqlite" // Register sqlite driver
 )
 
 func recorder() (*slog.Logger, *bytes.Buffer) {

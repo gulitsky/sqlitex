@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/gulitsky/sqlitex/v2"
-	_ "modernc.org/sqlite" // Register sqlite driver
 )
 
 func TestMigrateCreatesAndConverges(t *testing.T) {
@@ -147,7 +146,7 @@ func TestMigrateRejectsBrokenForeignKeys(t *testing.T) {
 func TestDBMigrate(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "migrate.db")
 
-	db, err := sqlitex.Open(t.Context(), "sqlite", dbPath)
+	db, err := sqlitex.Open(t.Context(), testDriver, dbPath)
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -192,7 +191,7 @@ CREATE INDEX idx_users_email ON users(email);
 	errs := make(chan error, writers)
 	for range writers {
 		go func() {
-			db, err := sqlitex.OpenReadWrite("sqlite", dbPath)
+			db, err := sqlitex.OpenReadWrite(testDriver, dbPath)
 			if err != nil {
 				errs <- err
 				return
@@ -209,7 +208,7 @@ CREATE INDEX idx_users_email ON users(email);
 		}
 	}
 
-	db, err := sqlitex.OpenReadWrite("sqlite", dbPath)
+	db, err := sqlitex.OpenReadWrite(testDriver, dbPath)
 	if err != nil {
 		t.Fatalf("OpenReadWrite failed: %v", err)
 	}

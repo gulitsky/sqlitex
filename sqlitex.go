@@ -1,7 +1,18 @@
-// Package sqlitex is a robust wrapper around database/sql for the
-// modernc.org/sqlite driver. It configures WAL mode, sane pragmas, and
-// connection pooling for read-only and read-write use, and provides a
-// background maintenance loop for periodic checkpoints and optimization.
+// Package sqlitex is a robust wrapper around database/sql for SQLite. It
+// configures WAL mode, sane pragmas, and connection pooling for read-only and
+// read-write use, and provides a background maintenance loop for periodic
+// checkpoints and optimization.
+//
+// The driver is a parameter: every constructor takes the name one was
+// registered under. Both modernc.org/sqlite (pure Go, registered as "sqlite")
+// and github.com/mattn/go-sqlite3 (cgo, registered as "sqlite3") are tested,
+// and the package neither imports nor depends on either.
+//
+// SQLite 3.37 or later is required, since the schema a migration compares
+// against may use STRICT tables. Both drivers have shipped a newer one for
+// years. Declaring a virtual table additionally needs the module it names to
+// be compiled in: mattn/go-sqlite3 leaves FTS5 out unless it is built with
+// -tags sqlite_fts5, where modernc.org/sqlite always has it.
 package sqlitex
 
 import (
@@ -28,12 +39,7 @@ import (
 // establishes that ordering itself.
 func OpenReadOnly(driverName string, filePath string, options ...option) (*sql.DB, error) {
 	cfg := &config{
-		params: map[string]string{
-			"_loc":    "auto",
-			"_txlock": "deferred",
-			"cache":   "private",
-			"mode":    "ro",
-		},
+		params:  commonParams("deferred", "ro"),
 		pragmas: commonPragmas(),
 	}
 	cfg.pragmas["cache_size"] = "-16000"
@@ -72,12 +78,7 @@ func OpenReadOnly(driverName string, filePath string, options ...option) (*sql.D
 // this one, since it is limited to a single connection. Open provides both.
 func OpenReadWrite(driverName string, filePath string, options ...option) (*sql.DB, error) {
 	cfg := &config{
-		params: map[string]string{
-			"_loc":    "auto",
-			"_txlock": "immediate",
-			"cache":   "private",
-			"mode":    "rwc",
-		},
+		params:  commonParams("immediate", "rwc"),
 		pragmas: commonPragmas(),
 	}
 	cfg.pragmas["analysis_limit"] = "1000"
@@ -126,6 +127,25 @@ func OpenMemory(driverName string, options ...option) (*sql.DB, error) {
 	db.SetMaxOpenConns(1)
 
 	return db, nil
+}
+
+// commonParams are the connection string parameters every pool is opened with,
+// given the transaction lock and access mode that distinguish the pools.
+//
+// Two of them are read by one driver each and ignored by the other, which is
+// what makes a database written through either one readable through both.
+// mattn/go-sqlite3 reads "_loc" and writes a time.Time in SQLite's own format;
+// modernc.org/sqlite reads "_time_format" and would otherwise write Go's
+// time.String(), which neither the other driver nor SQLite's date functions
+// can parse.
+func commonParams(txlock, mode string) map[string]string {
+	return map[string]string{
+		"_loc":         "auto",
+		"_time_format": "sqlite",
+		"_txlock":      txlock,
+		"cache":        "private",
+		"mode":         mode,
+	}
 }
 
 func commonPragmas() map[string]string {

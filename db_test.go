@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gulitsky/sqlitex/v2"
-	_ "modernc.org/sqlite" // Register sqlite driver
 )
 
 // Open creates a database that neither pool existed for beforehand, and the
@@ -16,7 +15,7 @@ import (
 func TestOpen(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "pair.db")
 
-	db, err := sqlitex.Open(t.Context(), "sqlite", dbPath)
+	db, err := sqlitex.Open(t.Context(), testDriver, dbPath)
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -46,7 +45,7 @@ func TestOpen(t *testing.T) {
 func TestOpenUnreachablePath(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "missing-dir", "pair.db")
 
-	db, err := sqlitex.Open(t.Context(), "sqlite", dbPath)
+	db, err := sqlitex.Open(t.Context(), testDriver, dbPath)
 	if err == nil {
 		_ = db.Close()
 		t.Fatal("expected Open to fail on a path whose directory does not exist")
@@ -57,7 +56,7 @@ func TestOpenUnreachablePath(t *testing.T) {
 func TestOpenOptions(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "options.db")
 
-	db, err := sqlitex.Open(t.Context(), "sqlite", dbPath,
+	db, err := sqlitex.Open(t.Context(), testDriver, dbPath,
 		sqlitex.WithBusyTimeout(3*time.Second),
 		sqlitex.WithPragma("foreign_keys", "off"),
 	)
@@ -89,7 +88,7 @@ func TestOpenOptions(t *testing.T) {
 func TestClose(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "close.db")
 
-	db, err := sqlitex.Open(t.Context(), "sqlite", dbPath)
+	db, err := sqlitex.Open(t.Context(), testDriver, dbPath)
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -111,7 +110,7 @@ func TestClose(t *testing.T) {
 func TestDBMaintain(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "maintain.db")
 
-	db, err := sqlitex.Open(t.Context(), "sqlite", dbPath)
+	db, err := sqlitex.Open(t.Context(), testDriver, dbPath)
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}

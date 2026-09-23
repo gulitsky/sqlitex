@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/gulitsky/sqlitex/v2"
-	_ "modernc.org/sqlite" // Register sqlite driver
 )
 
 // renameNickname is the premigration this package exists to make possible: it
@@ -111,7 +110,7 @@ func TestMigratePremigrationFailureRollsBack(t *testing.T) {
 	}
 }
 
-func TestMigrateFixtures(t *testing.T) {
+func TestMigrateSeed(t *testing.T) {
 	db := setup(t)
 
 	const schema = `
@@ -119,13 +118,13 @@ CREATE TABLE tiers (name TEXT PRIMARY KEY, rank INTEGER NOT NULL) STRICT;
 CREATE TABLE users (id INTEGER PRIMARY KEY, tier TEXT NOT NULL REFERENCES tiers(name)) STRICT;
 `
 
-	const fixtures = `
+	const seed = `
 INSERT INTO tiers (name, rank) VALUES ('free', 0), ('paid', 1)
 	ON CONFLICT (name) DO UPDATE SET rank = excluded.rank;
 `
 
 	migrate := func() error {
-		return sqlitex.Migrate(t.Context(), db, schema, sqlitex.WithFixtures(fixtures))
+		return sqlitex.Migrate(t.Context(), db, schema, sqlitex.WithSeed(seed))
 	}
 
 	if err := migrate(); err != nil {
@@ -135,7 +134,7 @@ INSERT INTO tiers (name, rank) VALUES ('free', 0), ('paid', 1)
 		t.Fatalf("tiers = %d, want 2", got)
 	}
 
-	// Fixtures run every time, so they have to converge rather than pile up.
+	// The seed runs every time, so it has to converge rather than pile up.
 	if err := migrate(); err != nil {
 		t.Fatalf("second Migrate failed: %v", err)
 	}
@@ -143,14 +142,14 @@ INSERT INTO tiers (name, rank) VALUES ('free', 0), ('paid', 1)
 		t.Errorf("tiers = %d after running twice, want 2", got)
 	}
 
-	// A schema change rebuilds the table underneath them, and they put the
-	// rows back.
+	// A schema change rebuilds the table underneath it, and it puts the rows
+	// back.
 	const changed = `
 CREATE TABLE tiers (name TEXT PRIMARY KEY, rank INTEGER NOT NULL, label TEXT) STRICT;
 CREATE TABLE users (id INTEGER PRIMARY KEY, tier TEXT NOT NULL REFERENCES tiers(name)) STRICT;
 `
 
-	if err := sqlitex.Migrate(t.Context(), db, changed, sqlitex.WithFixtures(fixtures)); err != nil {
+	if err := sqlitex.Migrate(t.Context(), db, changed, sqlitex.WithSeed(seed)); err != nil {
 		t.Fatalf("Migrate to the changed schema failed: %v", err)
 	}
 	if got := scalar[int](t, db, `SELECT count(*) FROM tiers;`); got != 2 {
@@ -160,7 +159,7 @@ CREATE TABLE users (id INTEGER PRIMARY KEY, tier TEXT NOT NULL REFERENCES tiers(
 
 // Seed data that points at nothing fails the migration rather than settling
 // into the database, even though enforcement is off while it runs.
-func TestMigrateFixturesAreChecked(t *testing.T) {
+func TestMigrateSeedIsChecked(t *testing.T) {
 	db := setup(t)
 
 	const schema = `
@@ -168,17 +167,17 @@ CREATE TABLE tiers (name TEXT PRIMARY KEY) STRICT;
 CREATE TABLE users (id INTEGER PRIMARY KEY, tier TEXT NOT NULL REFERENCES tiers(name)) STRICT;
 `
 
-	const fixtures = `INSERT INTO users (id, tier) VALUES (1, 'nonexistent');`
+	const seed = `INSERT INTO users (id, tier) VALUES (1, 'nonexistent');`
 
-	err := sqlitex.Migrate(t.Context(), db, schema, sqlitex.WithFixtures(fixtures))
+	err := sqlitex.Migrate(t.Context(), db, schema, sqlitex.WithSeed(seed))
 	if err == nil {
-		t.Fatal("expected fixtures pointing at a missing row to be rejected")
+		t.Fatal("expected a seed pointing at a missing row to be rejected")
 	}
 	if !strings.Contains(err.Error(), "foreign key") {
 		t.Errorf("error does not explain itself: %v", err)
 	}
 
-	// The whole migration went with them, schema included.
+	// The whole migration went with it, schema included.
 	if got := scalar[int](t, db, `SELECT count(*) FROM sqlite_schema WHERE name IN ('tiers', 'users');`); got != 0 {
 		t.Error("the rejected migration left its schema behind")
 	}
@@ -198,11 +197,11 @@ CREATE TABLE tiers (name TEXT PRIMARY KEY);
 CREATE TABLE users (id INTEGER PRIMARY KEY, handle TEXT, tier TEXT NOT NULL DEFAULT 'free' REFERENCES tiers(name));
 `
 
-	const fixtures = `INSERT INTO tiers (name) VALUES ('free'), ('paid') ON CONFLICT DO NOTHING;`
+	const seed = `INSERT INTO tiers (name) VALUES ('free'), ('paid') ON CONFLICT DO NOTHING;`
 
 	if err := sqlitex.Migrate(t.Context(), db, schema,
 		sqlitex.WithPremigration(renameNickname),
-		sqlitex.WithFixtures(fixtures),
+		sqlitex.WithSeed(seed),
 	); err != nil {
 		t.Fatalf("Migrate failed: %v", err)
 	}
@@ -214,7 +213,7 @@ CREATE TABLE users (id INTEGER PRIMARY KEY, handle TEXT, tier TEXT NOT NULL DEFA
 		t.Errorf("tier = %q, want the declared default", got)
 	}
 	if got := scalar[int](t, db, `SELECT count(*) FROM tiers;`); got != 2 {
-		t.Errorf("tiers = %d, want the fixtures to have added one", got)
+		t.Errorf("tiers = %d, want the seed to have added one", got)
 	}
 
 	if got := plan(t, db, schema); len(got) != 0 {
