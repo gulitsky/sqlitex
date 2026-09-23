@@ -6,7 +6,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 )
@@ -27,7 +26,6 @@ type migrateConfig struct {
 	premigration func(context.Context, *sql.Conn) error
 	seed         string
 	ignore       []string
-	logger       *slog.Logger
 }
 
 // migrateOption configures a migration.
@@ -150,28 +148,6 @@ func WithIgnore(patterns ...string) migrateOption {
 	}
 }
 
-// WithMigrationLogger sets the structured logger for migration events, which
-// otherwise go to slog.Default.
-//
-// A migration with nothing to do says so at debug level and is silent
-// otherwise; one that changes something reports each statement at debug level
-// and what it did overall at info level, once the transaction has committed.
-// Failures are returned rather than logged.
-//
-// The name is not WithLogger only because that one already belongs to
-// Maintain, and Go has no way to give both the same one.
-func WithMigrationLogger(logger *slog.Logger) migrateOption {
-	return func(cfg *migrateConfig) error {
-		if logger == nil {
-			return errors.New("logger must not be nil")
-		}
-
-		cfg.logger = logger
-
-		return nil
-	}
-}
-
 // Plan reports the statements that would bring the schema of db in line with
 // the declared one, in the order they would run. It applies none of them, and
 // returns nothing at all when the two already agree.
@@ -227,7 +203,7 @@ func Plan(ctx context.Context, db *sql.DB, schema string, options ...migrateOpti
 }
 
 func newMigrateConfig(options []migrateOption) (*migrateConfig, error) {
-	cfg := &migrateConfig{logger: slog.Default()}
+	cfg := &migrateConfig{}
 
 	for _, opt := range options {
 		if err := opt(cfg); err != nil {
@@ -303,23 +279,36 @@ func buildPlan(ctx context.Context, cfg *migrateConfig, drv driver.Driver, actua
 //
 // Migrate needs to write, so it is given the read-write pool. See Plan for
 // what it will refuse to do.
+//
+// A migration with nothing to do says so at debug level and is silent
+// otherwise; one that changes something reports each statement at debug level
+// and what it did overall at info level, once the transaction has committed.
+// Failures are returned rather than logged. Records go to slog.Default unless
+// the migration runs through a DB, which logs to its own DB.Logger.
 func Migrate(ctx context.Context, db *sql.DB, schema string, options ...migrateOption) error {
 	cfg, err := newMigrateConfig(options)
 	if err != nil {
 		return err
 	}
 
+	// A lone pool is a pair that reads and writes through the same one. Going
+	// through a DB is what gives the migration a logger, which is DB.Logger
+	// and here, with nothing to take it from, slog.Default.
+	return migrate(ctx, &DB{RW: db, RO: db}, schema, cfg)
+}
+
+// migrate is the body of Migrate, taking a config rather than the options it
+// was built from, so that DB.Migrate can hand down its own.
+func migrate(ctx context.Context, db *DB, schema string, cfg *migrateConfig) error {
 	var (
-		logger  = cfg.logger
+		logger  = db.logger()
 		applied int
 		written int64
 		ran     bool // whether a premigration was given a chance to change anything
 		started = time.Now()
 	)
 
-	err = migrating(ctx, db, true, func(conn *sql.Conn) error {
-		logger = logger.With("database", mainDatabaseName(ctx, conn))
-
+	err := migrating(ctx, db.RW, true, func(conn *sql.Conn) error {
 		// Rows written before anything ran, so that the foreign key check at
 		// the end can be skipped when there is nothing for it to find.
 		before, err := totalChanges(ctx, conn)
@@ -338,7 +327,7 @@ func Migrate(ctx context.Context, db *sql.DB, schema string, options ...migrateO
 			logger.DebugContext(ctx, "premigration applied")
 		}
 
-		stmts, err := buildPlan(ctx, cfg, db.Driver(), conn, schema)
+		stmts, err := buildPlan(ctx, cfg, db.RW.Driver(), conn, schema)
 		if err != nil {
 			return err
 		}
@@ -353,11 +342,24 @@ func Migrate(ctx context.Context, db *sql.DB, schema string, options ...migrateO
 
 		// Last, once the schema it is written against is in place.
 		if strings.TrimSpace(cfg.seed) != "" {
+			seedBefore, err := totalChanges(ctx, conn)
+			if err != nil {
+				return err
+			}
+
 			if _, err := conn.ExecContext(ctx, cfg.seed); err != nil {
 				return fmt.Errorf("apply seed: %w", err)
 			}
 
-			logger.DebugContext(ctx, "seed applied")
+			seedAfter, err := totalChanges(ctx, conn)
+			if err != nil {
+				return err
+			}
+
+			// A seed that has already taken writes nothing on the next run,
+			// which is the difference between one that is idempotent and one
+			// that rewrites its rows on every startup.
+			logger.DebugContext(ctx, "seed applied", "rows", seedAfter-seedBefore)
 		}
 
 		after, err := totalChanges(ctx, conn)

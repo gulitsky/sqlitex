@@ -1,7 +1,6 @@
 package sqlitex
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -13,8 +12,6 @@ import (
 type maintenanceConfig struct {
 	optimizePeriod   time.Duration
 	checkpointPeriod time.Duration
-	logger           *slog.Logger
-	database         string
 }
 
 // maintenanceOption configures the maintenance loop.
@@ -49,30 +46,6 @@ func WithCheckpointPeriod(period time.Duration) maintenanceOption {
 	}
 }
 
-// WithLogger sets the structured logger for maintenance events.
-func WithLogger(logger *slog.Logger) maintenanceOption {
-	return func(cfg *maintenanceConfig) error {
-		if logger == nil {
-			return errors.New("logger must not be nil")
-		}
-
-		cfg.logger = logger
-
-		return nil
-	}
-}
-
-// WithDatabaseName sets the name reported in the "database" attribute of every
-// maintenance log record. When unset, Maintain queries the database for the
-// file path of its main schema, which needs a pooled connection at startup;
-// pass the name explicitly to skip that query.
-func WithDatabaseName(name string) maintenanceOption {
-	return func(cfg *maintenanceConfig) error {
-		cfg.database = name
-		return nil
-	}
-}
-
 // Maintain starts a background maintenance loop for the database.
 // It performs periodic WAL checkpoints and optimizations.
 // It returns only when ctx is canceled or a fatal error occurs during final checkpoint.
@@ -83,25 +56,41 @@ func WithDatabaseName(name string) maintenanceOption {
 // wal_autocheckpoint is a per-connection setting, this covers the connections
 // the loop itself uses; pass WithWALAutoCheckpoint(0) to OpenReadWrite to
 // disable automatic checkpoints on every connection in the pool.
+//
+// The loop reports what it does to slog.Default, and adds no attributes of its
+// own: a program maintaining more than one database runs the loop through a
+// DB, whose DB.Logger it can tag with the name it knows that database by.
 func Maintain(ctx context.Context, db *sql.DB, options ...maintenanceOption) error {
+	cfg, err := newMaintenanceConfig(options)
+	if err != nil {
+		return err
+	}
+
+	// A lone pool is a pair that reads and writes through the same one. Going
+	// through a DB is what gives the loop a logger, which is DB.Logger and
+	// here, with nothing to take it from, slog.Default.
+	return maintain(ctx, &DB{RW: db, RO: db}, cfg)
+}
+
+func newMaintenanceConfig(options []maintenanceOption) (*maintenanceConfig, error) {
 	cfg := &maintenanceConfig{
 		optimizePeriod:   4 * time.Hour,
 		checkpointPeriod: 1 * time.Minute,
-		logger:           slog.Default(),
 	}
 
 	for _, opt := range options {
 		if err := opt(cfg); err != nil {
-			return fmt.Errorf("apply option: %w", err)
+			return nil, fmt.Errorf("apply option: %w", err)
 		}
 	}
 
-	database := cfg.database
-	if database == "" {
-		database = mainDatabaseName(ctx, db)
-	}
+	return cfg, nil
+}
 
-	logger := cfg.logger.With("database", database)
+// maintain is the body of Maintain, taking a config rather than the options it
+// was built from, so that DB.Maintain can hand down its own.
+func maintain(ctx context.Context, db *DB, cfg *maintenanceConfig) error {
+	pool, logger := db.RW, db.logger()
 
 	logger.Info("database maintenance started",
 		"optimize_period", cfg.optimizePeriod,
@@ -124,9 +113,9 @@ func Maintain(ctx context.Context, db *sql.DB, options ...maintenanceOption) err
 
 	// Take over checkpointing for the lifetime of the loop, and hand it back on
 	// the way out so that a database outliving its maintenance keeps checkpointing.
-	autoCheckpoint := walAutoCheckpoint(ctx, db)
-	setWALAutoCheckpoint(ctx, db, 0, logger)
-	defer setWALAutoCheckpoint(context.WithoutCancel(ctx), db, autoCheckpoint, logger)
+	autoCheckpoint := walAutoCheckpoint(ctx, pool)
+	setWALAutoCheckpoint(ctx, pool, 0, logger)
+	defer setWALAutoCheckpoint(context.WithoutCancel(ctx), pool, autoCheckpoint, logger)
 
 	doCheckpoint := func(mode string) error {
 		// Use WithoutCancel to ensure the checkpoint can run even if the parent context is canceled,
@@ -137,10 +126,10 @@ func Maintain(ctx context.Context, db *sql.DB, options ...maintenanceOption) err
 
 		// Reassert ownership: the pool may have replaced the connection that was
 		// configured at startup, and a fresh one checkpoints automatically again.
-		setWALAutoCheckpoint(tCtx, db, 0, logger)
+		setWALAutoCheckpoint(tCtx, pool, 0, logger)
 
 		query := fmt.Sprintf("PRAGMA wal_checkpoint(%s);", mode)
-		_, err := db.ExecContext(tCtx, query)
+		_, err := pool.ExecContext(tCtx, query)
 		return err
 	}
 
@@ -150,7 +139,7 @@ func Maintain(ctx context.Context, db *sql.DB, options ...maintenanceOption) err
 			logger.Debug("database maintenance stopping", "mode", "TRUNCATE")
 			if err := doCheckpoint("TRUNCATE"); err != nil {
 				logger.Error("final checkpoint failed", "mode", "TRUNCATE", "error", err)
-				return fmt.Errorf("final checkpoint on %s: %w", database, err)
+				return fmt.Errorf("final checkpoint: %w", err)
 			}
 			logger.Info("database maintenance stopped")
 			return nil
@@ -163,7 +152,7 @@ func Maintain(ctx context.Context, db *sql.DB, options ...maintenanceOption) err
 			}
 
 		case <-optC:
-			if _, err := db.ExecContext(ctx, "PRAGMA optimize;"); err != nil {
+			if _, err := pool.ExecContext(ctx, "PRAGMA optimize;"); err != nil {
 				logger.Warn("optimize failed", "error", err)
 			} else {
 				logger.Debug("optimize completed")
@@ -201,50 +190,4 @@ func setWALAutoCheckpoint(ctx context.Context, db *sql.DB, pages int, logger *sl
 	if _, err := db.ExecContext(tCtx, query); err != nil {
 		logger.Debug("setting wal_autocheckpoint failed", "pages", pages, "error", err)
 	}
-}
-
-// mainDatabaseName reports the file path backing the main schema of db, for use
-// as a log attribute. In-memory and temporary databases have no file path, so
-// they are reported as ":memory:"; a database that cannot be queried is
-// reported as "unknown" rather than failing maintenance.
-//
-// The timeout is deliberately short: the query may have to wait for a pooled
-// connection, and a read-write pool holds only one. Delaying the caller is
-// worse than logging an unresolved name.
-func mainDatabaseName(ctx context.Context, q querier) string {
-	const unknown = "unknown"
-
-	tCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-	defer cancel()
-
-	rows, err := q.QueryContext(tCtx, "PRAGMA database_list;")
-	if err != nil {
-		return unknown
-	}
-	defer rows.Close()
-
-	database := unknown
-	for rows.Next() {
-		var (
-			seq    int
-			schema string
-			file   sql.NullString
-		)
-		if err := rows.Scan(&seq, &schema, &file); err != nil {
-			return unknown
-		}
-		if schema != "main" {
-			continue
-		}
-
-		database = cmp.Or(file.String, ":memory:")
-
-		break
-	}
-
-	if rows.Err() != nil {
-		return unknown
-	}
-
-	return database
 }

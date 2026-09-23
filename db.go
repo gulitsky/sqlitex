@@ -1,10 +1,12 @@
 package sqlitex
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 )
 
 // DB is a matched pair of pools over one database file: a single-connection
@@ -18,10 +20,17 @@ type DB struct {
 	RW *sql.DB // read-write, limited to one connection
 	RO *sql.DB // read-only, sized by GOMAXPROCS
 
-	// path is the file the pair was opened from, reported as the database name
-	// in maintenance logs. A DB assembled by hand leaves it empty, and Maintain
-	// falls back to querying the database for its own path.
-	path string
+	// Logger receives what Migrate and Maintain have to say about this pair,
+	// and is where the pair is named: the library tags its records with
+	// nothing of its own, so a program that opens more than one database
+	// passes each pair a logger already carrying whatever it calls that one.
+	//
+	// A nil Logger means slog.Default. It is also the only way to redirect
+	// these records: the Migrate and Maintain functions log to slog.Default,
+	// and a lone pool is given a logger by wrapping it in a pair of itself.
+	//
+	//	db := &sqlitex.DB{RW: pool, RO: pool, Logger: logger}
+	Logger *slog.Logger
 }
 
 // Open opens a read-write and a read-only pool over filePath.
@@ -55,7 +64,7 @@ func Open(ctx context.Context, driverName string, filePath string, options ...op
 		return nil, errors.Join(fmt.Errorf("open read-only pool on %s: %w", filePath, err), ro.Close(), rw.Close())
 	}
 
-	return &DB{RW: rw, RO: ro, path: filePath}, nil
+	return &DB{RW: rw, RO: ro}, nil
 }
 
 // Close closes both pools and returns their joined errors.
@@ -73,21 +82,32 @@ func (db *DB) Close() error {
 }
 
 // Migrate brings the schema in line with the declared one, on the read-write
-// pool. See the [Migrate] function for what it does and what it refuses to do.
+// pool, reporting to Logger. See the [Migrate] function for what it does and
+// what it refuses to do.
 func (db *DB) Migrate(ctx context.Context, schema string, options ...migrateOption) error {
-	return Migrate(ctx, db.RW, schema, options...)
+	cfg, err := newMigrateConfig(options)
+	if err != nil {
+		return err
+	}
+
+	return migrate(ctx, db, schema, cfg)
 }
 
-// Maintain runs the maintenance loop on the read-write pool, reporting the
-// path the pair was opened from as the database name. It returns only when ctx
-// is canceled or the final checkpoint fails.
+// Maintain runs the maintenance loop on the read-write pool, reporting to
+// Logger. It returns only when ctx is canceled or the final checkpoint fails.
 //
 // See Maintain for what the loop does and how it takes over checkpointing.
 func (db *DB) Maintain(ctx context.Context, options ...maintenanceOption) error {
-	// Prepending the name skips the startup query for it, which would occupy
-	// the single connection of the read-write pool. A caller-supplied
-	// WithDatabaseName comes later in the slice and still wins.
-	options = append([]maintenanceOption{WithDatabaseName(db.path)}, options...)
+	cfg, err := newMaintenanceConfig(options)
+	if err != nil {
+		return err
+	}
 
-	return Maintain(ctx, db.RW, options...)
+	return maintain(ctx, db, cfg)
+}
+
+// logger reports where this pair's records go, which is slog.Default until
+// something says otherwise.
+func (db *DB) logger() *slog.Logger {
+	return cmp.Or(db.Logger, slog.Default())
 }

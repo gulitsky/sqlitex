@@ -49,6 +49,9 @@ if err != nil {
 }
 defer db.Close()
 
+// Where this database reports its migration and maintenance events.
+db.Logger = logger.With("database", "app.db")
+
 // Bring the schema in line with schema.sql, or fail before serving anything.
 if err := db.Migrate(ctx, schema); err != nil {
 	return err
@@ -205,6 +208,8 @@ fails the migration instead of settling into the database. The first two forms
 stop writing once the rows are there, which lets a migration with nothing else
 to do skip that check; `ON CONFLICT DO UPDATE` rewrites its rows every run, and
 a database big enough for the check to be slow will feel it on every startup.
+Which of the two a seed turned out to be is in its debug line, as the number of
+rows it wrote: a converged seed reports `rows=0`.
 
 ### Seeing the plan first
 
@@ -280,10 +285,18 @@ maintenance loop keeps checkpointing on its own. That pragma is per-connection,
 so it is reasserted before every checkpoint. To silence automatic checkpoints
 across the whole pool, pass `WithWALAutoCheckpoint(0)` at open time.
 
-Events go to `slog.Default()` unless `WithLogger` says otherwise, tagged with a
-`database` attribute. Pools opened through `Open` know their own path; anything
-else resolves the name with one `PRAGMA database_list` query, which
-`WithDatabaseName` skips.
+Events go to `slog.Default()`, or to `DB.Logger` when the loop runs through a
+pair. Neither `Migrate` nor `Maintain` adds an attribute of its own, so a
+program that opens more than one database gives each pair a logger already
+tagged with whatever it calls that one:
+
+```go
+db.Logger = logger.With("database", "app.db")
+```
+
+A lone pool — one opened by `OpenReadWrite` rather than `Open` — is given a
+logger by wrapping it in a pair of itself: `&sqlitex.DB{RW: pool, RO: pool,
+Logger: logger}`.
 
 ## What gets configured
 
@@ -368,7 +381,6 @@ For migrating — `Migrate` and `Plan`:
 | `WithSeed(sql)` | runs after the schema is in place; rows that have to exist |
 | `WithAllowDrop()` | permits dropping tables and columns no longer declared |
 | `WithIgnore(patterns...)` | leaves matching objects out of the comparison |
-| `WithMigrationLogger(l)` | where migration events go; `slog.Default` otherwise |
 
 For maintaining — `Maintain`:
 
@@ -376,11 +388,9 @@ For maintaining — `Maintain`:
 | --- | --- |
 | `WithCheckpointPeriod(d)` | how often to checkpoint; `0` disables |
 | `WithOptimizePeriod(d)` | how often to run `PRAGMA optimize`; `0` disables |
-| `WithLogger(l)` | where maintenance events go; `slog.Default` otherwise |
-| `WithDatabaseName(s)` | the name to log, skipping the query that resolves it |
 
-`WithLogger` and `WithMigrationLogger` do the same thing for different
-operations; they are two names because Go has no overloading.
+Neither takes a logger: logging is a property of the database, set once on
+`DB.Logger`, not of the call.
 
 ## Migrating from v1
 

@@ -27,7 +27,9 @@ CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT);
 CREATE INDEX idx_users_email ON users(email);
 `
 
-	if err := sqlitex.Migrate(t.Context(), db, schema, sqlitex.WithMigrationLogger(logger)); err != nil {
+	pair := &sqlitex.DB{RW: db, RO: db, Logger: logger}
+
+	if err := pair.Migrate(t.Context(), schema); err != nil {
 		t.Fatalf("Migrate failed: %v", err)
 	}
 
@@ -35,7 +37,6 @@ CREATE INDEX idx_users_email ON users(email);
 	for _, want := range []string{
 		`level=INFO`,
 		`msg="database schema migrated"`,
-		`database=:memory:`,
 		`statements=5`,
 		`msg="applying statement"`,
 		`CREATE INDEX idx_users_email`,
@@ -43,6 +44,40 @@ CREATE INDEX idx_users_email ON users(email);
 		if !strings.Contains(out, want) {
 			t.Errorf("log does not contain %q:\n%s", want, out)
 		}
+	}
+}
+
+// The seed reports how many rows it wrote, which is what tells an idempotent
+// seed apart from one that rewrites everything on every startup.
+func TestMigrateLogsSeedRows(t *testing.T) {
+	db := setup(t)
+
+	logger, log := recorder()
+
+	const (
+		schema = `CREATE TABLE roles (name TEXT PRIMARY KEY);`
+		seed   = `INSERT INTO roles (name) VALUES ('admin'), ('user') ON CONFLICT DO NOTHING;`
+	)
+
+	pair := &sqlitex.DB{RW: db, RO: db, Logger: logger}
+
+	if err := pair.Migrate(t.Context(), schema, sqlitex.WithSeed(seed)); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	if want := `msg="seed applied" rows=2`; !strings.Contains(log.String(), want) {
+		t.Errorf("log does not contain %q:\n%s", want, log.String())
+	}
+
+	log.Reset()
+
+	// The same seed over a database it has already seeded writes nothing.
+	if err := pair.Migrate(t.Context(), schema, sqlitex.WithSeed(seed)); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	if want := `msg="seed applied" rows=0`; !strings.Contains(log.String(), want) {
+		t.Errorf("log does not contain %q:\n%s", want, log.String())
 	}
 }
 
@@ -55,7 +90,9 @@ func TestMigrateIsQuietWhenUpToDate(t *testing.T) {
 
 	logger, log := recorder()
 
-	if err := sqlitex.Migrate(t.Context(), db, schema, sqlitex.WithMigrationLogger(logger)); err != nil {
+	pair := &sqlitex.DB{RW: db, RO: db, Logger: logger}
+
+	if err := pair.Migrate(t.Context(), schema); err != nil {
 		t.Fatalf("Migrate failed: %v", err)
 	}
 
@@ -157,10 +194,13 @@ func TestMigrateRejectsEmptyIgnorePattern(t *testing.T) {
 	}
 }
 
-func TestMigrateRejectsNilLogger(t *testing.T) {
+// A pair with no logger of its own still migrates, reporting to slog.Default.
+func TestMigrateWithoutLogger(t *testing.T) {
 	db := setup(t)
 
-	if err := sqlitex.Migrate(t.Context(), db, `CREATE TABLE t (x TEXT);`, sqlitex.WithMigrationLogger(nil)); err == nil {
-		t.Error("expected a nil logger to be rejected")
+	pair := &sqlitex.DB{RW: db, RO: db}
+
+	if err := pair.Migrate(t.Context(), `CREATE TABLE t (x TEXT);`); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
 	}
 }
