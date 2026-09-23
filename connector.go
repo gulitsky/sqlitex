@@ -83,7 +83,7 @@ func (c *connector) settle(ctx context.Context, conn driver.Conn, query string) 
 			// that never applies is returned as an error.
 			if attempt > 0 {
 				cmp.Or(c.logger, slog.Default()).DebugContext(ctx, "connection setup retried",
-					"query", query, "attempts", attempt+1)
+					slog.String("query", query), slog.Int("attempts", attempt+1))
 			}
 
 			return nil

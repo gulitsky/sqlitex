@@ -104,7 +104,7 @@ func (db *DB) Migrate(ctx context.Context, schema string, options ...migrateOpti
 }
 
 // Maintain runs the maintenance loop on the read-write pool, reporting to
-// Logger. It returns only when ctx is canceled or the final checkpoint fails.
+// Logger. It returns when ctx is canceled.
 //
 // See Maintain for what the loop does and how it takes over checkpointing.
 func (db *DB) Maintain(ctx context.Context, options ...maintenanceOption) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -289,5 +290,132 @@ func TestMaintain(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Error("Maintain did not return after cancellation")
+	}
+}
+
+// Disabling periodic checkpoints leaves checkpointing to SQLite: a loop that
+// never checkpoints on a timer must not switch off the automatic checkpoints
+// that are then all the database has.
+func TestMaintainWithoutCheckpointsKeepsAutoCheckpoint(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "no-checkpoints.db")
+
+	db, err := sqlitex.OpenReadWrite(testDriver, dbPath)
+	if err != nil {
+		t.Fatalf("OpenReadWrite failed: %v", err)
+	}
+	defer db.Close()
+
+	autoCheckpoint := func() int {
+		t.Helper()
+
+		var pages int
+		if err := db.QueryRow("PRAGMA wal_autocheckpoint;").Scan(&pages); err != nil {
+			t.Fatalf("query wal_autocheckpoint: %v", err)
+		}
+
+		return pages
+	}
+
+	before := autoCheckpoint()
+	if before <= 0 {
+		t.Fatalf("expected automatic checkpoints to be enabled on open, got %d", before)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sqlitex.Maintain(ctx, db, sqlitex.WithCheckpointPeriod(0))
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	if during := autoCheckpoint(); during != before {
+		t.Errorf("wal_autocheckpoint = %d while maintaining, want %d left alone", during, before)
+	}
+
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Fatalf("Maintain returned error: %v", err)
+	}
+}
+
+// A final checkpoint that cannot run is reported and nothing more: a shutdown
+// leaves the WAL on disk for the next open to apply, which is not a failure of
+// the program that was shutting down.
+func TestMaintainFinalCheckpointFailureIsNotFatal(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "final.db")
+
+	db, err := sqlitex.OpenReadWrite(testDriver, dbPath)
+	if err != nil {
+		t.Fatalf("OpenReadWrite failed: %v", err)
+	}
+
+	logger, log := recorder()
+	pair := &sqlitex.DB{RW: db, RO: db, Logger: logger}
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- pair.Maintain(ctx, sqlitex.WithCheckpointPeriod(10*time.Millisecond))
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Closing the pool is the surest way to make the final checkpoint fail.
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Errorf("Maintain returned error: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Maintain did not return after cancellation")
+	}
+
+	if out := log.String(); !strings.Contains(out, "level=WARN msg=\"final checkpoint failed\"") {
+		t.Errorf("expected a warning about the final checkpoint, got:\n%s", out)
+	}
+}
+
+// Checkpoints do nothing on a database that keeps no WAL, which the loop says
+// once at startup rather than on every tick.
+func TestMaintainWarnsOutsideWALMode(t *testing.T) {
+	db, err := sqlitex.OpenMemory(testDriver)
+	if err != nil {
+		t.Fatalf("OpenMemory failed: %v", err)
+	}
+	defer db.Close()
+
+	logger, log := recorder()
+	pair := &sqlitex.DB{RW: db, RO: db, Logger: logger}
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- pair.Maintain(ctx, sqlitex.WithCheckpointPeriod(10*time.Millisecond))
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("Maintain returned error: %v", err)
+	}
+
+	out := log.String()
+	if !strings.Contains(out, `level=WARN msg="checkpoints have no effect" journal_mode=memory`) {
+		t.Errorf("expected a warning about the journal mode, got:\n%s", out)
+	}
+
+	if n := strings.Count(out, "checkpoints have no effect"); n != 1 {
+		t.Errorf("journal mode reported %d times, want once", n)
 	}
 }

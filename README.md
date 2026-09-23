@@ -277,11 +277,29 @@ A zero period disables that task. On cancellation it runs a final
 `wal_checkpoint(TRUNCATE)` — with its own uncancelable context, so shutdown
 does not leave the WAL behind — and only then returns.
 
-While it runs it owns checkpointing: it sets `wal_autocheckpoint=0` and
-restores the previous value on the way out, so a database that outlives its
-maintenance loop keeps checkpointing on its own. That pragma is per-connection,
-so it is reasserted before every checkpoint. To silence automatic checkpoints
-across the whole pool, pass `WithWALAutoCheckpoint(0)` at open time.
+A checkpoint that a reader or a writer keeps from finishing is not an error:
+SQLite reports it as an ordinary result row, which the loop reads. A run of
+`PASSIVE` checkpoints that keep leaving frames behind is a reader that never
+lets go, and is logged as a warning once it has gone on for five periods. A
+final checkpoint that fails or comes back busy is logged too, and nothing more
+— the WAL stays on disk and the next connection to open the database applies
+it, so shutting down does not fail. The only error `Maintain` returns is one an
+option gave it.
+
+While it checkpoints on a timer it owns checkpointing: it sets
+`wal_autocheckpoint=0` and restores the previous value on the way out, so a
+database that outlives its maintenance loop keeps checkpointing on its own.
+That pragma is per-connection, so it is reasserted before every checkpoint. To
+silence automatic checkpoints across the whole pool, pass
+`WithWALAutoCheckpoint(0)` at open time. `WithCheckpointPeriod(0)` leaves
+SQLite's automatic checkpoints alone, since with no periodic checkpoints of its
+own the loop would otherwise let the WAL grow unchecked until shutdown.
+
+That takeover counts on the read-write pool being the single connection
+`OpenReadWrite` gives it. A hand-assembled pair whose writer pool holds several
+connections hands each pragma whichever one is free, so which connections end
+up with automatic checkpoints off — and which get the old value back — is up to
+the pool.
 
 Events go to the logger the pair was opened with, and to `slog.Default()`
 without one. The package tags its records with nothing of its own, so a program

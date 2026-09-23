@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -333,7 +334,7 @@ func migrate(ctx context.Context, db *DB, schema string, cfg *migrateConfig) err
 		}
 
 		for _, stmt := range stmts {
-			logger.DebugContext(ctx, "applying statement", "statement", stmt)
+			logger.DebugContext(ctx, "applying statement", slog.String("statement", stmt))
 
 			if _, err := conn.ExecContext(ctx, stmt); err != nil {
 				return fmt.Errorf("apply %s: %w", stmt, err)
@@ -359,7 +360,7 @@ func migrate(ctx context.Context, db *DB, schema string, cfg *migrateConfig) err
 			// A seed that has already taken writes nothing on the next run,
 			// which is the difference between one that is idempotent and one
 			// that rewrites its rows on every startup.
-			logger.DebugContext(ctx, "seed applied", "rows", seedAfter-seedBefore)
+			logger.DebugContext(ctx, "seed applied", slog.Int64("rows", seedAfter-seedBefore))
 		}
 
 		after, err := totalChanges(ctx, conn)
@@ -398,9 +399,9 @@ func migrate(ctx context.Context, db *DB, schema string, cfg *migrateConfig) err
 	}
 
 	logger.InfoContext(ctx, "database schema migrated",
-		"statements", applied,
-		"rows", written,
-		"duration", time.Since(started))
+		slog.Int("statements", applied),
+		slog.Int64("rows", written),
+		slog.Duration("duration", time.Since(started)))
 
 	return nil
 }
