@@ -131,7 +131,7 @@ func openScratch(drv driver.Driver) *sql.DB {
 	db := openDriver(drv, dsn(rand.Text(), map[string]string{
 		"cache": "shared",
 		"mode":  "memory",
-	}), "PRAGMA foreign_keys = off;", "PRAGMA journal_mode = MEMORY;")
+	}), nil, "PRAGMA foreign_keys = off;", "PRAGMA journal_mode = MEMORY;")
 
 	// A shared-cache memory database exists only while a connection to it is
 	// open, so the pool must keep exactly one and never retire it.

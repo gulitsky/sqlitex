@@ -43,14 +43,12 @@ var schema string
 db, err := sqlitex.Open(ctx, "sqlite", "app.db",
 	sqlitex.WithBusyTimeout(3*time.Second),
 	sqlitex.WithWALAutoCheckpoint(0), // leave all checkpointing to Maintain
+	sqlitex.WithLogger(logger.With("database", "app.db")),
 )
 if err != nil {
 	return err
 }
 defer db.Close()
-
-// Where this database reports its migration and maintenance events.
-db.Logger = logger.With("database", "app.db")
 
 // Bring the schema in line with schema.sql, or fail before serving anything.
 if err := db.Migrate(ctx, schema); err != nil {
@@ -285,18 +283,26 @@ maintenance loop keeps checkpointing on its own. That pragma is per-connection,
 so it is reasserted before every checkpoint. To silence automatic checkpoints
 across the whole pool, pass `WithWALAutoCheckpoint(0)` at open time.
 
-Events go to `slog.Default()`, or to `DB.Logger` when the loop runs through a
-pair. Neither `Migrate` nor `Maintain` adds an attribute of its own, so a
-program that opens more than one database gives each pair a logger already
-tagged with whatever it calls that one:
+Events go to the logger the pair was opened with, and to `slog.Default()`
+without one. The package tags its records with nothing of its own, so a program
+that opens more than one database passes each a logger already tagged with
+whatever it calls that one:
 
 ```go
-db.Logger = logger.With("database", "app.db")
+db, err := sqlitex.Open(ctx, "sqlite", "app.db",
+	sqlitex.WithLogger(logger.With("database", "app.db")))
 ```
 
-A lone pool — one opened by `OpenReadWrite` rather than `Open` — is given a
-logger by wrapping it in a pair of itself: `&sqlitex.DB{RW: pool, RO: pool,
-Logger: logger}`.
+`WithLogger` sets `DB.Logger`, which is an ordinary field and can be set
+afterwards just as well. A lone pool — one opened by `OpenReadWrite` rather
+than `Open` — takes its logger for a migration or a maintenance loop from a
+pair wrapped around it: `&sqlitex.DB{RW: pool, RO: pool, Logger: logger}`.
+
+Every pool uses the logger for one thing of its own: a connection whose setup
+statements had to be retried says so at debug level. Switching a database into
+WAL needs exclusive access, which a connection opened while another is writing
+does not get, so this is the rare startup that took a few milliseconds longer
+than it looks.
 
 ## What gets configured
 
@@ -360,6 +366,7 @@ For opening — `Open`, `OpenReadOnly`, `OpenReadWrite`, `OpenMemory`:
 | `WithWALAutoCheckpoint(n)` | `wal_autocheckpoint`, in pages; `0` disables |
 | `WithPragma(name, value)` | any other pragma |
 | `WithParam(name, value)` | any connection string parameter |
+| `WithLogger(l)` | where the database reports what it does; `slog.Default` otherwise |
 
 Options passed to `Open` apply to both pools, so overriding a per-role default
 — `cache_size`, say — overrides it for both; use the single-role constructors
@@ -389,8 +396,8 @@ For maintaining — `Maintain`:
 | `WithCheckpointPeriod(d)` | how often to checkpoint; `0` disables |
 | `WithOptimizePeriod(d)` | how often to run `PRAGMA optimize`; `0` disables |
 
-Neither takes a logger: logging is a property of the database, set once on
-`DB.Logger`, not of the call.
+Neither takes a logger: logging is a property of the database, set once at
+open time or on `DB.Logger`, not of the call.
 
 ## Migrating from v1
 

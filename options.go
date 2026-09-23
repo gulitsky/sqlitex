@@ -3,6 +3,7 @@ package sqlitex
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -11,10 +12,34 @@ import (
 type config struct {
 	params  map[string]string
 	pragmas map[string]string
+	logger  *slog.Logger
 }
 
 // option configures the database connection.
 type option func(*config) error
+
+// WithLogger sets where the database reports what it does: a connection whose
+// setup had to be retried, and, for a pair opened by Open, everything Migrate
+// and Maintain have to say — the option is what DB.Logger starts out as.
+//
+// The package tags its records with nothing of its own, so a program that
+// opens more than one database passes each a logger already carrying whatever
+// it calls that one:
+//
+//	sqlitex.WithLogger(logger.With("database", "app.db"))
+//
+// Unset, records go to slog.Default as of the moment each one is written.
+func WithLogger(logger *slog.Logger) option {
+	return func(cfg *config) error {
+		if logger == nil {
+			return errors.New("logger must not be nil")
+		}
+
+		cfg.logger = logger
+
+		return nil
+	}
+}
 
 // WithBusyTimeout sets the busy_timeout pragma.
 func WithBusyTimeout(timeout time.Duration) option {

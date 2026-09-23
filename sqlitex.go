@@ -51,7 +51,7 @@ func OpenReadOnly(driverName string, filePath string, options ...option) (*sql.D
 		}
 	}
 
-	db, err := open(driverName, dsn(filePath, cfg.params), pragmas(cfg.pragmas)...)
+	db, err := open(driverName, dsn(filePath, cfg.params), cfg.logger, pragmas(cfg.pragmas)...)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +91,7 @@ func OpenReadWrite(driverName string, filePath string, options ...option) (*sql.
 		}
 	}
 
-	db, err := open(driverName, dsn(filePath, cfg.params), pragmas(cfg.pragmas)...)
+	db, err := open(driverName, dsn(filePath, cfg.params), cfg.logger, pragmas(cfg.pragmas)...)
 	if err != nil {
 		return nil, err
 	}

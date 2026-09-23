@@ -1,11 +1,13 @@
 package sqlitex
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -14,6 +16,7 @@ type connector struct {
 	driver     driver.Driver
 	dsn        string
 	preemptive []string
+	logger     *slog.Logger
 }
 
 var _ driver.Connector = &connector{}
@@ -75,6 +78,14 @@ func (c *connector) settle(ctx context.Context, conn driver.Conn, query string) 
 		}
 
 		if err = c.exec(ctx, conn, query); err == nil {
+			// Only the retry is worth a record: a setup statement that
+			// applied the first time is what every connection does, and one
+			// that never applies is returned as an error.
+			if attempt > 0 {
+				cmp.Or(c.logger, slog.Default()).DebugContext(ctx, "connection setup retried",
+					"query", query, "attempts", attempt+1)
+			}
+
 			return nil
 		}
 	}
@@ -89,24 +100,25 @@ func (c *connector) Driver() driver.Driver {
 // open returns a pool whose every new connection runs the preemptive
 // statements before it is handed out, so pragmas apply to the whole pool
 // rather than to whichever connection happened to serve the setup query.
-func open(driverName string, dataSourceName string, preemptive ...string) (*sql.DB, error) {
+func open(driverName string, dataSourceName string, logger *slog.Logger, preemptive ...string) (*sql.DB, error) {
 	db, err := sql.Open(driverName, "")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
 
-	return openDriver(db.Driver(), dataSourceName, preemptive...), nil
+	return openDriver(db.Driver(), dataSourceName, logger, preemptive...), nil
 }
 
 // openDriver is open for a driver that is already in hand, which is how
 // migration reaches the driver of the database it is migrating without being
 // told its name again.
-func openDriver(drv driver.Driver, dataSourceName string, preemptive ...string) *sql.DB {
+func openDriver(drv driver.Driver, dataSourceName string, logger *slog.Logger, preemptive ...string) *sql.DB {
 	return sql.OpenDB(&connector{
 		driver:     drv,
 		dsn:        dataSourceName,
 		preemptive: preemptive,
+		logger:     logger,
 	})
 }
 

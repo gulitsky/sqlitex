@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +39,39 @@ func TestOpen(t *testing.T) {
 
 	if _, err := db.RO.ExecContext(t.Context(), "INSERT INTO test (val) VALUES ('world');"); err == nil {
 		t.Error("expected error writing through the RO pool, got nil")
+	}
+}
+
+// The logger a pair is opened with is the one its migration reports to.
+func TestOpenLogger(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "logged.db")
+
+	logger, log := recorder()
+
+	db, err := sqlitex.Open(t.Context(), testDriver, dbPath, sqlitex.WithLogger(logger))
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close() //nolint:errcheck // asserted by TestClose
+
+	if db.Logger != logger {
+		t.Error("Open did not keep the logger it was given")
+	}
+
+	if err := db.Migrate(t.Context(), `CREATE TABLE items (name TEXT);`); err != nil {
+		t.Fatalf("Migrate failed: %v", err)
+	}
+
+	if want := `msg="database schema migrated"`; !strings.Contains(log.String(), want) {
+		t.Errorf("log does not contain %q:\n%s", want, log.String())
+	}
+}
+
+func TestOpenRejectsNilLogger(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "nil-logger.db")
+
+	if _, err := sqlitex.Open(t.Context(), testDriver, dbPath, sqlitex.WithLogger(nil)); err == nil {
+		t.Error("expected a nil logger to be rejected")
 	}
 }
 

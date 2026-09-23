@@ -20,16 +20,16 @@ type DB struct {
 	RW *sql.DB // read-write, limited to one connection
 	RO *sql.DB // read-only, sized by GOMAXPROCS
 
-	// Logger receives what Migrate and Maintain have to say about this pair,
-	// and is where the pair is named: the library tags its records with
-	// nothing of its own, so a program that opens more than one database
-	// passes each pair a logger already carrying whatever it calls that one.
-	//
-	// A nil Logger means slog.Default. It is also the only way to redirect
-	// these records: the Migrate and Maintain functions log to slog.Default,
-	// and a lone pool is given a logger by wrapping it in a pair of itself.
+	// Logger receives what Migrate and Maintain have to say about this pair.
+	// Open sets it from WithLogger; a pair assembled by hand sets it itself,
+	// which is also how a lone pool is given one:
 	//
 	//	db := &sqlitex.DB{RW: pool, RO: pool, Logger: logger}
+	//
+	// A nil Logger means slog.Default as of the moment each record is
+	// written. The package tags its records with nothing of its own, so a
+	// program that opens more than one database passes each pair a logger
+	// already carrying whatever it calls that one.
 	Logger *slog.Logger
 }
 
@@ -46,6 +46,16 @@ type DB struct {
 //
 // The returned DB must be closed.
 func Open(ctx context.Context, driverName string, filePath string, options ...option) (*DB, error) {
+	// Applied here only to reach the logger, which is the one option that
+	// outlives the connection string it is passed with. The pools apply them
+	// again, over the defaults each role opens with.
+	cfg := &config{params: map[string]string{}, pragmas: map[string]string{}}
+	for _, opt := range options {
+		if err := opt(cfg); err != nil {
+			return nil, fmt.Errorf("apply option: %w", err)
+		}
+	}
+
 	rw, err := OpenReadWrite(driverName, filePath, options...)
 	if err != nil {
 		return nil, err
@@ -64,7 +74,7 @@ func Open(ctx context.Context, driverName string, filePath string, options ...op
 		return nil, errors.Join(fmt.Errorf("open read-only pool on %s: %w", filePath, err), ro.Close(), rw.Close())
 	}
 
-	return &DB{RW: rw, RO: ro}, nil
+	return &DB{RW: rw, RO: ro, Logger: cfg.logger}, nil
 }
 
 // Close closes both pools and returns their joined errors.
